@@ -8,7 +8,8 @@
     "payee-test": "node --env-file=.env payee-test.js",
     "test": "node --test *.test.js",
     "eval": "node --env-file=.env --disable-warning=ExperimentalWarning eval-receipts.js",
-    "webhook": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning register-webhook.js"
+    "webhook": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning register-webhook.js",
+    "eval:agent": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning eval-agent.js"
   },
   "keywords": [],
   "author": "",

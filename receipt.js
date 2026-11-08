@@ -1,10 +1,9 @@
 // Receipt photo -> line items, using Gemini vision with a fixed JSON schema.
 // The model only reads the receipt; split.js checkReceipt() decides whether the numbers add up.
-import { GoogleGenAI, createPartFromBase64 } from "@google/genai";
+import { createPartFromBase64 } from "@google/genai";
 import { z } from "zod";
 import { allocate } from "./split.js";
-
-const MODEL = process.env.GEMINI_MODEL ?? "gemini-3.8-flash";
+import { gemini, MODEL } from "./gemini.js";
 
 const Receipt = z.object({
   merchant: z.string(),
@@ -27,21 +26,8 @@ const PROMPT = `Read this restaurant or bar receipt and extract what was ordered
 - All amounts are integers in cents (12,50 € -> 1250).
 - If a value is unreadable, give your best reading; the app will ask the user to check anything that doesn't add up.`;
 
-let ai; // created on first use so the app (and tests) still start without credentials
-
-// Three ways in, first match wins:
-// VERTEX_API_KEY: Vertex AI "express mode" key bound to a service account (hosting, e.g. Render);
-// GOOGLE_CLOUD_PROJECT: Vertex AI with your gcloud login (local dev); GEMINI_API_KEY: Gemini Developer API.
-const { VERTEX_API_KEY, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION = "global", GEMINI_API_KEY } = process.env;
-export const geminiConfigured = () => Boolean(VERTEX_API_KEY || GOOGLE_CLOUD_PROJECT || GEMINI_API_KEY);
-
 export async function readReceipt({ mediaType, data }) {
-  ai ??= VERTEX_API_KEY
-    ? new GoogleGenAI({ vertexai: true, apiKey: VERTEX_API_KEY })
-    : GOOGLE_CLOUD_PROJECT
-      ? new GoogleGenAI({ vertexai: true, project: GOOGLE_CLOUD_PROJECT, location: GOOGLE_CLOUD_LOCATION })
-      : new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-  const response = await ai.models.generateContent({
+  const response = await gemini().models.generateContent({
     model: MODEL,
     contents: [createPartFromBase64(data, mediaType), PROMPT],
     config: { responseMimeType: "application/json", responseJsonSchema: z.toJSONSchema(Receipt) },

@@ -48,6 +48,16 @@
       <div class="actions" id="organiserActions"></div>
     </div>
 
+    <div class="card" id="agentCard">
+      <h2>Ask PayShare</h2>
+      <ol id="chat" class="activity" aria-live="polite"></ol>
+      <form id="ask" style="display:flex;gap:8px;margin-top:8px">
+        <input id="question" placeholder="Who's missing? · Remind Jussi · I'll cover Anna" aria-label="Message to the PayShare assistant" autocomplete="off">
+        <button class="chip">Send</button>
+      </form>
+      <p class="muted" style="font-size:.85rem;margin:8px 0 0">The assistant can check holds and post reminders. It can't move money: covering or cancelling needs the organiser to tap Confirm.</p>
+    </div>
+
     <div class="card">
       <h2>Group feed</h2>
       <ol id="activity" class="activity" aria-live="polite"></ol>
@@ -141,6 +151,41 @@
       await navigator.clipboard.writeText(url);
       share.textContent = "✅ Link copied";
     };
+
+    // The assistant: show the question, every tool call as it ran, the reply, and Confirm buttons for proposals.
+    const TOOL = { get_status: "checked the holds", nudge: "posted a reminder", propose_cover: "proposed covering a share", propose_cancel: "proposed cancelling" };
+    const line = (html) => chat.insertAdjacentHTML("beforeend", `<li>${html}</li>`);
+    ask.onsubmit = async (e) => {
+      e.preventDefault();
+      const message = question.value.trim();
+      if (!message) return;
+      if (!me) return line(`<span class="warn">Pick your name above first.</span>`);
+      question.value = "";
+      line(`<b>${esc(me)}:</b> ${esc(message)}`);
+      line(`<span class="muted" id="thinking">🤖 thinking…</span>`);
+      try {
+        const r = await fetch(`/api/tabs/${id}/agent`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ person: me, message }) });
+        const d = await r.json();
+        document.getElementById("thinking")?.remove();
+        if (!r.ok) throw new Error(d.error);
+        for (const c of d.calls) {
+          const who = c.args.person ? ` (${esc(c.args.person)})` : "";
+          line(`<span class="muted">🔧 ${esc(c.name)}${who}: ${c.result.error ? `<span class="warn">${esc(c.result.error)}</span>` : TOOL[c.name] ?? "done"}</span>`);
+        }
+        if (d.reply) line(`🤖 ${esc(d.reply)}`);
+        for (const p of d.pending) line(`<button class="chip" data-confirm="${esc(p.token)}">✅ Confirm: ${esc(p.label)}</button>`);
+      } catch (err) {
+        document.getElementById("thinking")?.remove();
+        line(`<span class="warn">❌ ${esc(err.message)}</span>`);
+      }
+    };
+    chat.addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-confirm]");
+      if (!b) return;
+      b.disabled = true;
+      try { state = await post("confirm", { token: b.dataset.confirm, person: me }); b.textContent = "✅ Done"; render(); }
+      catch (err) { b.textContent = `❌ ${err.message}`; }
+    });
 
     new EventSource(`/api/tabs/${id}/events`).onmessage = (e) => { state = JSON.parse(e.data); render(); };
     mountPayPal({ button: document.querySelector("paypal-button"), tabId: id, who, say })

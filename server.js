@@ -1,7 +1,9 @@
 import express from "express";
 import { db } from "./db.js";
 import { splitTab, checkReceipt, allocate, UNCLAIMED } from "./split.js";
-import { readReceipt, toClaimableItems, geminiConfigured } from "./receipt.js";
+import { readReceipt, toClaimableItems } from "./receipt.js";
+import { geminiConfigured } from "./gemini.js";
+import { runAgent, writeReminders } from "./agent.js";
 
 const { PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, PAYEE_EMAIL, PORT = 3000 } = process.env;
 if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
@@ -436,18 +438,23 @@ app.post("/api/tabs/:id/out", (req, res) => {
   res.json(view(tab));
 });
 
-app.post("/api/tabs/:id/cover", (req, res) => {
-  const tab = getTab(req.params.id);
-  const { person } = req.body ?? {};
-  if (!tab || tab.mode !== "checkout" || !isOpenCheckout(tab)) return res.status(409).json({ error: "this group checkout is closed" });
-  const share = db.prepare("SELECT * FROM shares WHERE tab_id = ? AND person = ? AND status = 'out'").get(tab.id, person);
-  if (!share) return res.status(409).json({ error: "nobody to cover" });
+// The organiser takes over someone's unpaid share: it becomes the organiser's to hold, settled between them later.
+function coverShare(tab, person) {
+  const share = db.prepare("SELECT * FROM shares WHERE tab_id = ? AND person = ? AND status IN ('open', 'out')").get(tab.id, person);
+  if (!share || person === tab.organiser) return null;
   const coverer = `${tab.organiser} (for ${person})`;
   db.prepare("UPDATE claims SET person = ? WHERE person = ? AND item_id IN (SELECT id FROM items WHERE tab_id = ?)").run(coverer, person, tab.id);
   db.prepare("UPDATE shares SET person = ?, status = 'open', order_id = NULL WHERE tab_id = ? AND person = ?").run(coverer, tab.id, person);
   post(tab.id, `🤝 ${tab.organiser} covers ${person}'s ${euros(share.cents)} €. ${person} can pay ${tab.organiser} back later.`);
   publish(tab.id);
-  res.json(view(tab));
+  return share;
+}
+
+// The organiser's own buttons on the page: the tap itself is the confirmation.
+app.post("/api/tabs/:id/cover", (req, res) => {
+  const tab = getTab(req.params.id);
+  if (!tab || tab.mode !== "checkout" || !isOpenCheckout(tab)) return res.status(409).json({ error: "this group checkout is closed" });
+  coverShare(tab, req.body?.person) ? res.json(view(tab)) : res.status(409).json({ error: "nobody to cover" });
 });
 
 app.post("/api/tabs/:id/cancel", async (req, res) => {
@@ -456,6 +463,102 @@ app.post("/api/tabs/:id/cancel", async (req, res) => {
   await release(tab.id, `🛑 ${tab.organiser} cancelled the group checkout.`);
   res.json(view(getTab(tab.id)));
 });
+
+// ---- the agent ----
+// Money-moving tools only create a proposal with a one-time token. Nothing happens until the organiser
+// taps Confirm, which sends the token back; the server checks it, then acts. The model never sees the token.
+const proposals = new Map(); // token -> { tabId, kind, person, by, expires }
+const minutesLeft = (tab) => Math.max(0, Math.round((new Date(tab.expires_at) - Date.now()) / 60_000));
+
+function agentTools(tab, speaker, pending) {
+  const isOrganiser = speaker === tab.organiser;
+  const propose = (kind, person, label) => {
+    const token = crypto.randomUUID();
+    proposals.set(token, { tabId: tab.id, kind, person, by: speaker, expires: Date.now() + 5 * 60_000 });
+    pending.push({ token, label });
+    return { proposed: label, needs_confirmation: `${tab.organiser} must tap Confirm` };
+  };
+  return {
+    get_status: () => {
+      const v = view(getTab(tab.id));
+      return {
+        booking: v.tab.status, minutes_left: minutesLeft(getTab(tab.id)), organiser: tab.organiser,
+        people: v.people.map((p) => ({ person: p.person, status: p.status, share_eur: euros(p.cents) })),
+      };
+    },
+    nudge: ({ person, message }) => {
+      const p = getShares(tab.id).find((s) => s.person === person);
+      if (!p) return { error: `${person} isn't in this group` };
+      if (p.status !== "open") return { error: `${person} doesn't need a reminder (status: ${p.status})` };
+      post(tab.id, `🤖 → ${person}: ${String(message ?? "").slice(0, 200)}`);
+      publish(tab.id);
+      return { posted: true };
+    },
+    propose_cover: ({ person }) => {
+      if (!isOrganiser) return { error: `only the organiser (${tab.organiser}) can cover someone's share` };
+      const s = getShares(tab.id).find((x) => x.person === person && ["open", "out"].includes(x.status));
+      if (!s || person === tab.organiser) return { error: `${person} has no unpaid share to cover` };
+      return propose("cover", person, `${tab.organiser} covers ${person}'s ${euros(s.cents)} €`);
+    },
+    propose_cancel: () => {
+      if (!isOrganiser) return { error: `only the organiser (${tab.organiser}) can cancel` };
+      return propose("cancel", null, "Cancel the booking and release every hold");
+    },
+  };
+}
+
+app.post("/api/tabs/:id/agent", async (req, res, next) => {
+  try {
+    const tab = getTab(req.params.id);
+    const { person, message } = req.body ?? {};
+    if (!tab || tab.mode !== "checkout") return res.status(404).json({ error: "no such group checkout" });
+    if (!getShares(tab.id).some((s) => s.person === person)) return res.status(400).json({ error: "pick your name first" });
+    if (!geminiConfigured()) return res.status(500).json({ error: "the assistant needs Gemini credentials" });
+    const pending = [];
+    const out = await runAgent({ message, context: { speaker: person, organiser: tab.organiser, title: tab.title }, tools: agentTools(tab, person, pending) });
+    res.json({ ...out, pending });
+  } catch (e) { next(e); }
+});
+
+export async function confirmProposal(tabId, token, person) {
+  const p = proposals.get(token);
+  proposals.delete(token); // one-time, whatever happens next
+  const tab = getTab(tabId);
+  if (!p || p.tabId !== tabId || p.expires < Date.now()) return { status: 409, error: "this confirmation has expired" };
+  if (person !== tab.organiser || person !== p.by) return { status: 403, error: "only the organiser can confirm" };
+  if (!isOpenCheckout(tab)) return { status: 409, error: "this group checkout is closed" };
+  if (p.kind === "cover" && !coverShare(tab, p.person)) return { status: 409, error: `${p.person}'s share can't be covered any more` };
+  if (p.kind === "cancel") await release(tab.id, `🛑 ${tab.organiser} cancelled the group checkout (via the assistant).`);
+  return { view: view(getTab(tab.id)) };
+}
+
+app.post("/api/tabs/:id/confirm", async (req, res) => {
+  const r = await confirmProposal(req.params.id, req.body?.token, req.body?.person);
+  r.error ? res.status(r.status).json({ error: r.error }) : res.json(r.view);
+});
+
+// Proactive reminders: once a third of the time is left (at most 5 minutes), the agent writes one nudge per
+// person without a hold. Plain code decides *when*; Gemini only writes the words. The release at 0:00 never
+// depends on the model.
+const reminded = new Set();
+async function remindSlowOnes() {
+  for (const tab of db.prepare("SELECT * FROM tabs WHERE mode = 'checkout' AND status = 'open'").all()) {
+    const left = new Date(tab.expires_at) - Date.now();
+    const total = new Date(tab.expires_at) - new Date(tab.created_at.replace(" ", "T") + "Z");
+    if (reminded.has(tab.id) || left > Math.min(total / 3, 5 * 60_000) || left <= 0) continue;
+    reminded.add(tab.id);
+    const slow = getShares(tab.id).filter((s) => s.status === "open").map((s) => s.person);
+    if (!slow.length || !geminiConfigured()) continue;
+    try {
+      for (const r of await writeReminders({ title: tab.title, minutesLeft: Math.max(1, Math.round(left / 60_000)), people: slow })) post(tab.id, `🤖 → ${r.person}: ${r.message}`);
+    } catch (e) {
+      console.error("reminders", e.message);
+      for (const p of slow) post(tab.id, `🤖 → ${p}: ${Math.round(left / 60_000)} minutes left to put your hold in!`);
+    }
+    publish(tab.id);
+  }
+}
+setInterval(() => remindSlowOnes().catch((e) => console.error("remind", e.message)), 5000).unref();
 
 // ---- PayPal webhooks: the source of truth for "paid" ----
 // Signature check happens at PayPal: we send back the exact bytes we received.
@@ -530,4 +633,4 @@ app.use((err, _req, res, _next) => {
 
 if (process.argv[1].endsWith("server.js")) app.listen(PORT, () => console.log(`http://localhost:${PORT}`));
 
-export { db, settle, release, getTab, getShares };
+export { db, settle, release, getTab, getShares, agentTools };

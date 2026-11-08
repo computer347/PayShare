@@ -102,3 +102,34 @@ test("cancel releases holds once", async () => {
   await release(id, "cancelled again");
   assert.equal(calls.filter((p) => p.endsWith("/void")).length, 2);
 });
+
+// ---- agent tools: proposals never move money until the organiser confirms ----
+const { agentTools, confirmProposal } = await import("./server.js");
+
+test("agent proposals do nothing until the organiser confirms, and tokens work once", async () => {
+  fakePayPal();
+  const { id } = createCheckout({ product: "lakeside-cabin", organiser: "Sami", members: ["Anna", "Jussi"] });
+  const tab = getTab(id);
+  const pending = [];
+  const r = agentTools(tab, "Sami", pending).propose_cover({ person: "Anna" });
+  assert.match(r.proposed, /Sami covers Anna's 160\.00 €/, "amount comes from the server, not the model");
+  assert.equal(getShares(id).find((s) => s.person === "Anna").status, "open", "nothing changed yet");
+  assert.equal((await confirmProposal(id, pending[0].token, "Jussi")).status, 403, "only the organiser confirms");
+  assert.equal((await confirmProposal(id, pending[0].token, "Sami")).status, 409, "a token is burnt after one use, even a failed one");
+
+  const again = [];
+  agentTools(tab, "Sami", again).propose_cover({ person: "Anna" });
+  assert.ok((await confirmProposal(id, again[0].token, "Sami")).view);
+  assert.ok(getShares(id).some((s) => s.person === "Sami (for Anna)"), "covered after confirm");
+});
+
+test("non-organisers can't propose money moves; nudges only reach people without a hold", () => {
+  const { id } = createCheckout({ product: "lakeside-cabin", organiser: "Sami", members: ["Anna"] });
+  const pending = [];
+  const tools = agentTools(getTab(id), "Anna", pending);
+  assert.ok(tools.propose_cancel().error);
+  assert.ok(tools.propose_cover({ person: "Sami" }).error);
+  assert.equal(pending.length, 0);
+  assert.ok(tools.nudge({ person: "Mallory", message: "hi" }).error);
+  assert.ok(tools.nudge({ person: "Sami", message: "hurry" }).posted);
+});
