@@ -9,15 +9,20 @@
 <body>
   <main>
     <h1>PayShare</h1>
-    <p class="sub">Any bill, any group, one tab. Everyone pays their part with PayPal, and you see who has <em>actually</em> paid.</p>
+    <p class="sub">Pay as a group with PayPal. Nobody is charged until everyone is in, and you see who has <em>actually</em> paid.</p>
     <div class="card">
-      <a class="big" href="/new.html" style="display:block;text-align:center;text-decoration:none">📷 Split a receipt</a>
+      <h2>Before you buy</h2>
+      <p>Booking a cabin with friends? Everyone puts a hold on their share in PayPal. When the last one lands, the booking goes through. If someone doesn't make it in 15 minutes, every hold is released.</p>
+      <a class="big" href="/cabin.html" style="display:block;text-align:center;text-decoration:none">🏡 Try the group checkout</a>
     </div>
     <div class="card">
-      <p>Or try it with a sample dinner paid by Sami: open the tab, tap what you had, pay your part in the PayPal sandbox.</p>
-      <button class="big" id="demo">Open the demo dinner</button>
+      <h2>After the bill</h2>
+      <p>Snap a receipt: AI reads the items, everyone taps what they had and pays their part. PayShare forwards it to whoever paid the bill.</p>
+      <a class="big" href="/new.html" style="display:block;text-align:center;text-decoration:none">📷 Split a receipt</a>
+      <button class="link" id="demo" style="font:inherit;background:none;border:0;color:var(--accent);cursor:pointer;padding:10px 0 0">or open a sample dinner</button>
       <p id="msg" role="status"></p>
     </div>
+    <p class="muted">PayPal sandbox only. Demo app for the PayPal AI Hackathon 2026.</p>
   </main>
   <script type="module">
     demo.onclick = async () => {

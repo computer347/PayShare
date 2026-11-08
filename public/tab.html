@@ -42,6 +42,7 @@
   </main>
 
   <script type="module">
+    import { mountPayPal } from "/paypal.js";
     const id = new URLSearchParams(location.search).get("id");
     const eur = (c) => `${(c / 100).toFixed(2)} €`;
     const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -123,33 +124,9 @@
       if (r.ok) { state = d; render(); } else alert(d.error);
     });
 
-    // PayPal JS SDK v6 (sandbox): https://developer.paypal.com/sdk/js/set-up
     let paypalReady = false;
     async function setupPayPal() {
-      await new Promise((ok, fail) => document.head.append(Object.assign(document.createElement("script"), { src: "https://www.sandbox.paypal.com/web-sdk/v6/core", onload: ok, onerror: fail })));
-      const { clientId } = await (await fetch("/config")).json();
-      const sdk = await window.paypal.createInstance({ clientId, components: ["paypal-payments"], pageType: "checkout" });
-      if (!(await sdk.findEligibleMethods({ currencyCode: "EUR" })).isEligible("paypal")) throw new Error("PayPal isn't available for this payment");
-      const session = sdk.createPayPalOneTimePaymentSession({
-        async onApprove({ orderId }) {
-          say("Confirming payment…");
-          const r = await fetch(`/api/orders/${orderId}/capture`, { method: "POST" });
-          const d = await r.json();
-          if (!r.ok) say(`❌ ${d.error}`);
-          await load();
-        },
-        onCancel: () => say("Payment cancelled. Your part is still open."),
-        onError: (e) => say(`❌ ${e.message ?? e}`),
-      });
-      const btn = document.querySelector("paypal-button");
-      btn.addEventListener("click", () => {
-        say("");
-        // The server works out the amount from the claims; the browser only says who is paying.
-        const order = fetch(`/api/tabs/${id}/pay`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ person: who() }) })
-          .then((r) => r.json())
-          .then((d) => { if (!d.id) throw new Error(d.error); return { orderId: d.id }; });
-        session.start({ presentationMode: "auto" }, order).catch((e) => say(`❌ ${e.message}`));
-      });
+      await mountPayPal({ button: document.querySelector("paypal-button"), tabId: id, who, say, onDone: load });
       paypalReady = true;
       render();
     }

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lakeside Cabins · checkout</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .demo{background:var(--accent-soft);color:var(--ink);font-size:.85rem;text-align:center;padding:6px 12px}
+    .brand{font-family:Georgia,serif;font-size:1.6rem;margin:0 0 4px}
+    .photo{height:160px;border-radius:12px;background:linear-gradient(160deg,#2f6f8f,#9cc9a8 60%,#e9d7a8);display:grid;place-items:center;font-size:3.5rem;margin-bottom:12px}
+    .hold{font-weight:600}
+    .pp{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;font:inherit;font-weight:700;border:0;border-radius:999px;padding:12px;background:#ffc439;color:#111;cursor:pointer;margin-top:10px}
+    .card-btn{width:100%;font:inherit;border:1px solid var(--line);border-radius:999px;padding:12px;background:none;color:var(--muted)}
+    textarea{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);min-height:84px}
+  </style>
+</head>
+<body>
+  <div class="demo">Demo merchant for PayShare. Not a real booking site; payments use the PayPal sandbox.</div>
+  <main>
+    <p class="brand">Lakeside Cabins</p>
+    <p class="sub">Checkout</p>
+    <div class="card">
+      <div class="photo" aria-hidden="true">🏡</div>
+      <h1 style="font-size:1.2rem">Sauna cabin by the lake</h1>
+      <p class="muted">Fri–Sun, 2 nights · sleeps 4 · wood-fired sauna</p>
+      <div class="row total"><span>Total</span><span class="price">480.00 €</span></div>
+      <p class="hold">⏳ We're holding this cabin for you for <span id="clock">15:00</span>.</p>
+    </div>
+
+    <div class="card">
+      <h2>Payment</h2>
+      <button class="card-btn" disabled>Pay 480 € by card</button>
+      <button class="pp" id="group">Pay as a group with <b><i>PayPal</i></b></button>
+      <form id="form" hidden style="margin-top:14px">
+        <p class="muted">Each person puts a hold on their share in PayPal. Nobody is charged until everyone is in. If someone doesn't make it within 15 minutes, every hold is released.</p>
+        <label for="me">Your name</label>
+        <input id="me" required autocomplete="given-name" placeholder="e.g. Sami">
+        <label for="friends" style="margin-top:12px">Who's coming? (one name per line)</label>
+        <textarea id="friends" required placeholder="Anna&#10;Jussi&#10;Jonathan"></textarea>
+        <p id="msg" role="status"></p>
+        <button class="big">Start group checkout</button>
+      </form>
+    </div>
+  </main>
+  <script type="module">
+    // Decorative clock for the merchant's own hold; the real 15 minutes start on the group page.
+    const end = Date.now() + 15 * 60_000;
+    setInterval(() => { const s = Math.max(0, Math.round((end - Date.now()) / 1000)); clock.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }, 1000);
+    try { me.value = localStorage.getItem("payshare-name") ?? ""; } catch {}
+    group.onclick = () => { form.hidden = false; me.focus(); };
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const members = friends.value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
+      const r = await fetch("/api/checkouts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ product: "lakeside-cabin", organiser: me.value.trim(), members }) });
+      const d = await r.json();
+      if (!r.ok) { msg.textContent = `❌ ${d.error}`; return; }
+      try { localStorage.setItem("payshare-name", me.value.trim()); } catch {}
+      location.href = `/group.html?id=${d.id}`;
+    };
+  </script>
+</body>
+</html>

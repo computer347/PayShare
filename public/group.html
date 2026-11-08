@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Group checkout · PayShare</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .clock{font-size:2.6rem;font-weight:700;font-variant-numeric:tabular-nums;text-align:center;margin:4px 0}
+    .banner{border-radius:14px;padding:16px;margin-bottom:16px;font-weight:600;text-align:center}
+    .banner.ok{background:color-mix(in srgb,var(--ok) 18%,transparent)}
+    .banner.bad{background:color-mix(in srgb,var(--warn) 18%,transparent)}
+    .member{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
+    .member:last-child{border-bottom:0}
+    .actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+    .link{font:inherit;background:none;border:0;color:var(--accent);cursor:pointer;padding:6px 0}
+  </style>
+</head>
+<body>
+  <main>
+    <h1 id="title">Loading…</h1>
+    <p class="sub" id="subtitle"></p>
+    <div id="banner" class="banner" hidden></div>
+
+    <div class="card" id="clockCard">
+      <h2 style="text-align:center">Time left for everyone to join</h2>
+      <p class="clock" id="clock">--:--</p>
+      <p class="muted" style="text-align:center;margin:0">Nobody is charged until everyone is in. If time runs out, every hold is released.</p>
+      <div style="text-align:center;margin-top:10px"><button class="chip" id="share">🔗 Share with the group</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Who are you?</h2>
+      <div class="chips" id="names"></div>
+    </div>
+
+    <div class="card" id="mine" hidden>
+      <h2>Your share</h2>
+      <div class="row total"><span id="mineLabel">Your share</span><span class="price" id="mineCents"></span></div>
+      <paypal-button type="pay" hidden></paypal-button>
+      <button class="link" id="out" hidden>I can't make it</button>
+      <p id="msg" role="status"></p>
+    </div>
+
+    <div class="card">
+      <h2>The group</h2>
+      <div id="members"></div>
+      <div class="actions" id="organiserActions"></div>
+    </div>
+
+    <div class="card">
+      <h2>Group feed</h2>
+      <ol id="activity" class="activity" aria-live="polite"></ol>
+    </div>
+  </main>
+
+  <script type="module">
+    import { mountPayPal } from "/paypal.js";
+    const id = new URLSearchParams(location.search).get("id");
+    const eur = (c) => `${(c / 100).toFixed(2)} €`;
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+    const say = (t) => (msg.textContent = t);
+    const post = (path, body) => fetch(`/api/tabs/${id}/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) }).then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d; });
+    let state, me = "", paypalReady = false;
+    try { me = localStorage.getItem("payshare-name") ?? ""; } catch {}
+    const who = () => me;
+
+    const LABEL = {
+      open: ["⏳", "waiting", "warn"], held: ["🔒", "on hold, not charged", "ok"], confirming: ["💳", "charged, confirming…", "ok"],
+      paid: ["✅", "paid, confirmed by PayPal", "ok"], released: ["↩️", "hold released", "muted"], refunded: ["↩️", "refunded", "muted"], out: ["🚪", "can't make it", "warn"],
+    };
+
+    function render() {
+      if (!state) return;
+      const { tab, people } = state;
+      document.title = `${tab.merchant} · group checkout`;
+      title.textContent = tab.title;
+      subtitle.textContent = `${eur(tab.totalCents)} split ${people.length} ways · started by ${tab.organiser}`;
+      const open = tab.status === "open";
+      clockCard.hidden = !open;
+
+      const outcome = {
+        settling: ["ok", "🙌 Everyone's in! Taking the money from every hold…"],
+        booked: ["ok", `🏡 Booked! ${tab.merchant} has been paid in full.`],
+        releasing: ["bad", "Releasing every hold…"],
+        released: ["bad", "Booking cancelled. Every hold was released. Nobody was charged."],
+        failed: ["bad", "Booking cancelled. Everyone got their money back."],
+      }[tab.status];
+      banner.hidden = !outcome;
+      if (outcome) { banner.className = `banner ${outcome[0]}`; banner.textContent = outcome[1]; }
+
+      names.innerHTML = people.map((p) => `<button class="chip" data-name="${esc(p.person)}" aria-pressed="${p.person === me}">${p.person === me ? "✓ " : ""}I'm ${esc(p.person)}</button>`).join("");
+      const mineP = people.find((p) => p.person === me);
+      mine.hidden = !mineP;
+      if (mineP) {
+        mineLabel.textContent = `${mineP.person}'s share`;
+        mineCents.textContent = eur(mineP.cents);
+        const canHold = open && mineP.status === "open";
+        document.querySelector("paypal-button").hidden = !canHold || !paypalReady;
+        out.hidden = !canHold || mineP.person === tab.organiser;
+        if (mineP.status === "held") say("🔒 Your share is on hold in PayPal. You're only charged if everyone makes it.");
+        else if (mineP.status === "out") say("You're marked as not coming.");
+      }
+
+      members.innerHTML = people.map((p) => {
+        const [icon, text, cls] = LABEL[p.status] ?? ["", p.status, "muted"];
+        return `<div class="member"><span>${esc(p.person)} <span class="${cls}">${icon} ${text}</span></span><span class="price">${eur(p.cents)}</span></div>`;
+      }).join("");
+
+      // shortcut: no accounts, so organiser actions are shown to the person who picked the organiser's name
+      const outs = people.filter((p) => p.status === "out");
+      organiserActions.innerHTML = open && me === tab.organiser
+        ? outs.map((p) => `<button class="chip" data-cover="${esc(p.person)}">🤝 Cover ${esc(p.person)}'s ${eur(p.cents)}</button>`).join("") + `<button class="chip" data-cancel>🛑 Cancel for everyone</button>`
+        : "";
+
+      const time = (at) => new Date(at.replace(" ", "T") + "Z").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      activity.innerHTML = state.feed.map((f) => `<li><span class="muted">${time(f.at)}</span> ${esc(f.text)}</li>`).join("");
+    }
+
+    setInterval(() => {
+      if (!state?.tab.expiresAt) return;
+      const s = Math.max(0, Math.round((new Date(state.tab.expiresAt) - Date.now()) / 1000));
+      clock.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+      clock.className = `clock ${s < 120 ? "warn" : ""}`;
+    }, 250);
+
+    document.addEventListener("click", async (e) => {
+      const t = e.target.closest("[data-name],[data-cover],[data-cancel]");
+      if (!t) return;
+      try {
+        if (t.dataset.name) { me = t.dataset.name; try { localStorage.setItem("payshare-name", me); } catch {} render(); }
+        else if (t.dataset.cover) state = await post("cover", { person: t.dataset.cover });
+        else if ("cancel" in t.dataset && confirm("Cancel the booking and release everyone's hold?")) state = await post("cancel");
+        render();
+      } catch (err) { alert(err.message); }
+    });
+    out.onclick = async () => { try { state = await post("out", { person: me }); render(); } catch (err) { say(`❌ ${err.message}`); } };
+    share.onclick = async () => {
+      const url = location.href;
+      if (navigator.share) return navigator.share({ title: state?.tab.title, text: "Put a hold on your share. Nobody pays unless everyone's in:", url }).catch(() => {});
+      await navigator.clipboard.writeText(url);
+      share.textContent = "✅ Link copied";
+    };
+
+    new EventSource(`/api/tabs/${id}/events`).onmessage = (e) => { state = JSON.parse(e.data); render(); };
+    mountPayPal({ button: document.querySelector("paypal-button"), tabId: id, who, say })
+      .then(() => { paypalReady = true; render(); })
+      .catch((e) => say(`❌ ${e.message}`));
+  </script>
+</body>
+</html>
