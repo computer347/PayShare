@@ -29,16 +29,18 @@ const PROMPT = `Read this restaurant or bar receipt and extract what was ordered
 
 let ai; // created on first use so the app (and tests) still start without credentials
 
-// Two ways in: Vertex AI on a Google Cloud project (gcloud login, GOOGLE_CLOUD_PROJECT), or a Gemini API key.
-export const geminiConfigured = () => Boolean(process.env.GOOGLE_CLOUD_PROJECT || process.env.GEMINI_API_KEY);
+// Three ways in, first match wins:
+// VERTEX_API_KEY: Vertex AI "express mode" key bound to a service account (hosting, e.g. Render);
+// GOOGLE_CLOUD_PROJECT: Vertex AI with your gcloud login (local dev); GEMINI_API_KEY: Gemini Developer API.
+const { VERTEX_API_KEY, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION = "global", GEMINI_API_KEY } = process.env;
+export const geminiConfigured = () => Boolean(VERTEX_API_KEY || GOOGLE_CLOUD_PROJECT || GEMINI_API_KEY);
 
 export async function readReceipt({ mediaType, data }) {
-  const { GOOGLE_CLOUD_PROJECT: project, GOOGLE_CLOUD_LOCATION: location = "global", GEMINI_API_KEY: apiKey } = process.env;
-  // On a host without gcloud (Render), a service-account key JSON in GOOGLE_CREDENTIALS_JSON signs in instead.
-  const credentials = process.env.GOOGLE_CREDENTIALS_JSON && JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
-  ai ??= project
-    ? new GoogleGenAI({ vertexai: true, project, location, ...(credentials && { googleAuthOptions: { credentials } }) })
-    : new GoogleGenAI({ apiKey });
+  ai ??= VERTEX_API_KEY
+    ? new GoogleGenAI({ vertexai: true, apiKey: VERTEX_API_KEY })
+    : GOOGLE_CLOUD_PROJECT
+      ? new GoogleGenAI({ vertexai: true, project: GOOGLE_CLOUD_PROJECT, location: GOOGLE_CLOUD_LOCATION })
+      : new GoogleGenAI({ apiKey: GEMINI_API_KEY });
   const response = await ai.models.generateContent({
     model: MODEL,
     contents: [createPartFromBase64(data, mediaType), PROMPT],

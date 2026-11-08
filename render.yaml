@@ -21,5 +21,5 @@ services:
         sync: false
       - key: GOOGLE_CLOUD_PROJECT
         sync: false
-      - key: GOOGLE_CREDENTIALS_JSON # service-account key JSON with Vertex AI User role
+      - key: VERTEX_API_KEY # API key bound to a service account with "Agent Platform User" role
         sync: false
