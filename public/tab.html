@@ -34,6 +34,11 @@
       <h2>Who has paid</h2>
       <div id="feed"></div>
     </div>
+
+    <div class="card">
+      <h2>Group feed</h2>
+      <ol id="activity" class="activity" aria-live="polite"></ol>
+    </div>
   </main>
 
   <script type="module">
@@ -87,6 +92,11 @@
           return `<div class="row"><span>${esc(p.person)} <span class="${cls}">${label}</span></span><span class="price">${eur(p.cents)}</span></div>`;
         }).join("") +
         (unclaimed ? `<div class="row"><span class="warn">Unclaimed: ${unclaimed.items.map((i) => esc(i.name)).join(", ")}</span><span class="price">${eur(unclaimed.total)}</span></div>` : "");
+
+      const time = (at) => new Date(at.replace(" ", "T") + "Z").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      activity.innerHTML = state.feed.length
+        ? state.feed.map((f) => `<li><span class="muted">${time(f.at)}</span> ${esc(f.text)}</li>`).join("")
+        : `<li class="muted">Payments show up here as they happen.</li>`;
     }
 
     function items_html(list, paid) {
@@ -153,7 +163,8 @@
 
     await load();
     setupPayPal().catch((e) => say(`❌ ${e.message}`));
-    setInterval(load, 3000); // shortcut: polling; switch to Server-Sent Events with the webhook work
+    // Live updates: the server pushes the tab whenever someone claims, pays, or PayPal confirms.
+    new EventSource(`/api/tabs/${id}/events`).onmessage = (e) => { state = JSON.parse(e.data); render(); };
   </script>
 </body>
 </html>

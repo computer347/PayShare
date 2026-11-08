@@ -3,11 +3,12 @@
   "version": "1.0.0",
   "description": "Any bill, any group, one tab — PayPal + AI group splitting",
   "scripts": {
-    "start": "node --env-file=.env server.js",
+    "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning server.js",
     "smoke": "node --env-file=.env smoke.js",
     "payee-test": "node --env-file=.env payee-test.js",
     "test": "node --test *.test.js",
-    "eval": "node --env-file=.env --disable-warning=ExperimentalWarning eval-receipts.js"
+    "eval": "node --env-file=.env --disable-warning=ExperimentalWarning eval-receipts.js",
+    "webhook": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning register-webhook.js"
   },
   "keywords": [],
   "author": "",
@@ -17,5 +18,8 @@
     "@google/genai": "^3.0.0",
     "express": "^5.3.0",
     "zod": "^4.6.7"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }

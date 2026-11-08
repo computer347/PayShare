@@ -34,7 +34,11 @@ export const geminiConfigured = () => Boolean(process.env.GOOGLE_CLOUD_PROJECT |
 
 export async function readReceipt({ mediaType, data }) {
   const { GOOGLE_CLOUD_PROJECT: project, GOOGLE_CLOUD_LOCATION: location = "global", GEMINI_API_KEY: apiKey } = process.env;
-  ai ??= project ? new GoogleGenAI({ vertexai: true, project, location }) : new GoogleGenAI({ apiKey });
+  // On a host without gcloud (Render), a service-account key JSON in GOOGLE_CREDENTIALS_JSON signs in instead.
+  const credentials = process.env.GOOGLE_CREDENTIALS_JSON && JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
+  ai ??= project
+    ? new GoogleGenAI({ vertexai: true, project, location, ...(credentials && { googleAuthOptions: { credentials } }) })
+    : new GoogleGenAI({ apiKey });
   const response = await ai.models.generateContent({
     model: MODEL,
     contents: [createPartFromBase64(data, mediaType), PROMPT],

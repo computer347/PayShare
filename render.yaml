@@ -1,0 +1,25 @@
+# Render Blueprint: New > Blueprint > pick this repo. Secrets are entered in the dashboard (sync: false).
+services:
+  - type: web
+    name: payshare
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYEE_EMAIL # sandbox account of "the friend who paid", used by the demo dinner
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID # from registering https://<your-app>.onrender.com/api/paypal/webhook
+        sync: false
+      - key: GOOGLE_CLOUD_PROJECT
+        sync: false
+      - key: GOOGLE_CREDENTIALS_JSON # service-account key JSON with Vertex AI User role
+        sync: false

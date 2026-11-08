@@ -60,8 +60,26 @@ function view(tab) {
     items: getItems(tab.id).map((i) => ({ ...i, claimers: claims.filter((c) => c.itemId === i.id).map((c) => c.person) })),
     people,
     unclaimed: s[UNCLAIMED] ?? null,
+    feed: db.prepare("SELECT text, at FROM feed WHERE tab_id = ? ORDER BY id DESC LIMIT 30").all(tab.id),
   };
 }
+
+// ---- live updates: every open tab page holds a Server-Sent Events stream ----
+const streams = new Map(); // tabId -> Set of open responses
+function publish(tabId) {
+  const tab = getTab(tabId);
+  const msg = `data: ${JSON.stringify(view(tab))}\n\n`;
+  for (const res of streams.get(tabId) ?? []) res.write(msg);
+}
+// Keeps idle connections open through proxies (Render closes silent ones).
+setInterval(() => { for (const set of streams.values()) for (const res of set) res.write(": ping\n\n"); }, 25_000).unref();
+
+const post = (tabId, text) => db.prepare("INSERT INTO feed (tab_id, text) VALUES (?, ?)").run(tabId, text);
+const describe = (share) => {
+  const mine = split(getTab(share.tab_id))[share.person];
+  const what = mine?.items.map((i) => (i.sharedWith > 1 ? `${i.name} (1/${i.sharedWith})` : i.name)).join(", ");
+  return `${share.person}: ${euros(share.cents)} €${what ? ` (${what})` : ""}`;
+};
 
 function createTab({ title, organiser, payeeEmail, totalCents, subtotalCents, items }) {
   const check = checkReceipt({ items, subtotalCents, totalCents });
@@ -76,7 +94,8 @@ function createTab({ title, organiser, payeeEmail, totalCents, subtotalCents, it
 
 const isPerson = (p) => typeof p === "string" && p.trim().length > 0 && p.length <= 40;
 const app = express();
-app.use(express.json({ limit: "8mb" })); // receipt photos arrive as base64, downscaled in the browser
+// Receipt photos arrive as base64 (downscaled in the browser). rawBody is kept for webhook signature checks.
+app.use(express.json({ limit: "8mb", verify: (req, _res, buf) => { req.rawBody = buf.toString("utf8"); } }));
 app.use(express.static("public"));
 
 // demoPayee pre-fills the organiser's sandbox PayPal email on the new-tab page.
@@ -144,6 +163,17 @@ app.put("/api/tabs/:id/claims", (req, res) => {
   if (claimed) db.prepare("INSERT OR IGNORE INTO claims (item_id, person) VALUES (?, ?)").run(itemId, person);
   else db.prepare("DELETE FROM claims WHERE item_id = ? AND person = ?").run(itemId, person);
   res.json(view(tab));
+  publish(tab.id);
+});
+
+app.get("/api/tabs/:id/events", (req, res) => {
+  const tab = getTab(req.params.id);
+  if (!tab) return res.status(404).end();
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+  res.write(`data: ${JSON.stringify(view(tab))}\n\n`);
+  const set = streams.get(tab.id) ?? streams.set(tab.id, new Set()).get(tab.id);
+  set.add(res);
+  req.on("close", () => set.delete(res));
 });
 
 // Creates the PayPal order for one person's share, paid straight to the organiser.
@@ -197,10 +227,74 @@ app.post("/api/orders/:id/capture", async (req, res, next) => {
     const r = await paypal("POST", `/v2/checkout/orders/${encodeURIComponent(share.order_id)}/capture`, undefined, `${share.order_id}-capture`);
     const cap = r.purchase_units?.[0]?.payments?.captures?.[0];
     if (r.status !== "COMPLETED" || !cap) return res.status(402).json({ error: `payment not completed (${cap?.status ?? r.status})` });
-    db.prepare("UPDATE shares SET status = 'confirming', capture_id = ? WHERE order_id = ?").run(cap.id, share.order_id);
+    // Forward-only: if PayPal's webhook already marked it paid, don't step back to confirming.
+    const moved = db.prepare("UPDATE shares SET status = 'confirming', capture_id = ? WHERE order_id = ? AND status = 'open'").run(cap.id, share.order_id);
+    if (moved.changes) post(share.tab_id, `💳 ${describe(share)}, confirming with PayPal…`);
+    publish(share.tab_id);
     res.json({ status: "confirming", captureId: cap.id });
   } catch (e) { next(e); }
 });
+
+// ---- PayPal webhooks: the source of truth for "paid" ----
+// Signature check happens at PayPal: we send back the exact bytes we received.
+async function verifyWebhook(req) {
+  const h = (n) => req.get(n);
+  const body =
+    `{"auth_algo":${JSON.stringify(h("paypal-auth-algo"))},"cert_url":${JSON.stringify(h("paypal-cert-url"))},` +
+    `"transmission_id":${JSON.stringify(h("paypal-transmission-id"))},"transmission_sig":${JSON.stringify(h("paypal-transmission-sig"))},` +
+    `"transmission_time":${JSON.stringify(h("paypal-transmission-time"))},"webhook_id":${JSON.stringify(process.env.PAYPAL_WEBHOOK_ID)},` +
+    `"webhook_event":${req.rawBody}}`;
+  const res = await fetch(`${API}/v1/notifications/verify-webhook-signature`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${await accessToken()}`, "Content-Type": "application/json" },
+    body,
+  });
+  return res.ok && (await res.json()).verification_status === "SUCCESS";
+}
+
+app.post("/api/paypal/webhook", async (req, res, next) => {
+  try {
+    if (!process.env.PAYPAL_WEBHOOK_ID) return res.status(500).json({ error: "PAYPAL_WEBHOOK_ID not set" });
+    if (!(await verifyWebhook(req))) return res.status(400).json({ error: "signature check failed" });
+    const share = handleEvent(req.body);
+    if (share) publish(share.tab_id);
+    res.sendStatus(200);
+  } catch (e) { next(e); }
+});
+
+// One transaction: the event id is only recorded together with its effect, so a crash halfway
+// leaves nothing recorded and PayPal's retry processes it again. Repeats of a done event are ignored.
+function handleEvent(event) {
+  db.exec("BEGIN");
+  try {
+    const share = applyEvent(event);
+    db.exec("COMMIT");
+    return share;
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+function applyEvent(event) {
+  if (!db.prepare("INSERT OR IGNORE INTO webhook_events (id, type) VALUES (?, ?)").run(event.id, event.event_type).changes) return null;
+  const orderId = event.resource?.supplementary_data?.related_ids?.order_id;
+  const share = orderId && db.prepare("SELECT * FROM shares WHERE order_id = ?").get(orderId);
+  if (!share) return null; // not one of ours (e.g. the hello-world or payee tests)
+  if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
+    const moved = db.prepare("UPDATE shares SET status = 'paid', capture_id = ? WHERE order_id = ? AND status IN ('open', 'confirming')").run(event.resource.id, orderId);
+    if (moved.changes) {
+      post(share.tab_id, `✅ PayPal confirmed ${describe(share)}`);
+      const v = view(getTab(share.tab_id));
+      if (!v.unclaimed && v.people.every((p) => ["paid", "organiser"].includes(p.status))) post(share.tab_id, `🎉 Everyone has paid ${v.tab.organiser} back. Tab settled.`);
+    }
+  } else if (["PAYMENT.CAPTURE.DECLINED", "PAYMENT.CAPTURE.DENIED"].includes(event.event_type)) {
+    const moved = db.prepare("UPDATE shares SET status = 'open', capture_id = NULL WHERE order_id = ? AND status = 'confirming'").run(orderId);
+    if (moved.changes) post(share.tab_id, `❌ ${share.person}'s payment was declined by PayPal. Their part is open again.`);
+  }
+  return share;
+}
+export { handleEvent, db };
 
 app.use((err, _req, res, _next) => {
   console.error(err.message, JSON.stringify(err.data ?? ""));

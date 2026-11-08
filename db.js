@@ -33,4 +33,17 @@ db.exec(`
     status TEXT NOT NULL DEFAULT 'open',
     PRIMARY KEY (tab_id, person)
   );
+  -- the group feed shown on the tab page ("✅ PayPal confirmed Anna's 33.00 €")
+  CREATE TABLE IF NOT EXISTS feed (
+    id INTEGER PRIMARY KEY,
+    tab_id TEXT NOT NULL REFERENCES tabs(id),
+    text TEXT NOT NULL,
+    at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+  -- PayPal webhook event ids already handled: PayPal retries deliveries, we act once
+  CREATE TABLE IF NOT EXISTS webhook_events (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    received_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
 `);
