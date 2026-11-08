@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>New tab · PayShare</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .line{display:flex;gap:8px;margin-bottom:8px}
+    .line input:first-child{flex:1}
+    .line input.money{width:96px;text-align:right}
+    .x{font:inherit;border:1px solid var(--line);background:none;color:var(--muted);border-radius:10px;padding:0 12px;cursor:pointer}
+    .link{font:inherit;background:none;border:0;color:var(--accent);cursor:pointer;padding:4px 0}
+    .field{margin-bottom:12px}
+    #check{margin-top:10px}
+    .file{display:block;text-align:center}
+    .file input{display:none}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Split a receipt</h1>
+    <p class="sub">Snap the receipt. AI reads the items, you check them, then everyone taps what they had.</p>
+
+    <div class="card">
+      <label class="big file">📷 Snap or choose a receipt<input id="photo" type="file" accept="image/*" capture="environment"></label>
+      <p id="msg" role="status"></p>
+    </div>
+
+    <form id="form" class="card" hidden>
+      <h2>Check what the AI read</h2>
+      <div class="field"><label for="title">Tab name</label><input id="title" required></div>
+      <div class="field"><label for="organiser">Your name (you paid the bill)</label><input id="organiser" required autocomplete="given-name"></div>
+      <div class="field"><label for="payee">Your PayPal email (where everyone pays you back)</label><input id="payee" type="email" required></div>
+      <label>Items</label>
+      <div id="lines"></div>
+      <button type="button" class="link" id="add">+ Add item</button>
+      <div class="field" style="margin-top:12px"><label for="subtotal">Subtotal printed on the receipt (optional)</label><input id="subtotal" class="money" inputmode="decimal"></div>
+      <div class="field"><label for="total">Total you paid, incl. tip</label><input id="total" class="money" inputmode="decimal" required></div>
+      <p id="check" role="status"></p>
+      <button class="big" id="create">Create tab and share</button>
+    </form>
+  </main>
+
+  <script type="module">
+    const eur = (c) => `${(c / 100).toFixed(2)} €`;
+    const toCents = (s) => { const v = Number(String(s).trim().replace(",", ".")); return String(s).trim() && Number.isFinite(v) ? Math.round(v * 100) : null; };
+    const money = (c) => (c == null ? "" : (c / 100).toFixed(2));
+    const config = await (await fetch("/config")).json();
+    try { organiser.value = localStorage.getItem("payshare-name") ?? ""; } catch {}
+    payee.value = config.demoPayee;
+
+    // Phone photos are huge; shrink to ~1600px JPEG before upload.
+    async function shrink(file) {
+      const img = await createImageBitmap(file);
+      const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const c = Object.assign(document.createElement("canvas"), { width: Math.round(img.width * scale), height: Math.round(img.height * scale) });
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      return c.toDataURL("image/jpeg", 0.85).split(",")[1];
+    }
+
+    photo.onchange = async () => {
+      const file = photo.files[0];
+      if (!file) return;
+      msg.textContent = "Reading the receipt… (takes a few seconds)";
+      try {
+        const r = await fetch("/api/receipts/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mediaType: "image/jpeg", data: await shrink(file) }) });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error);
+        msg.textContent = `Found ${d.items.length} items at ${d.merchant}.` + (d.currency !== "EUR" ? ` ⚠️ Receipt is in ${d.currency}; this demo charges EUR.` : "");
+        title.value = d.merchant;
+        lines.innerHTML = "";
+        d.items.forEach(addLine);
+        subtotal.value = money(d.subtotalCents);
+        total.value = money(d.totalCents);
+        form.hidden = false;
+        check_();
+      } catch (e) {
+        msg.textContent = `❌ ${e.message}`;
+      }
+    };
+
+    function addLine(item = { name: "", cents: null }) {
+      const row = document.createElement("div");
+      row.className = "line";
+      row.innerHTML = `<input aria-label="Item name" required><input class="money" aria-label="Price in euros" inputmode="decimal" required><button type="button" class="x" aria-label="Remove item">✕</button>`;
+      row.children[0].value = item.name;
+      row.children[1].value = money(item.cents);
+      row.children[2].onclick = () => { row.remove(); check_(); };
+      lines.append(row);
+    }
+    add.onclick = () => addLine();
+    form.oninput = () => check_();
+
+    const items = () => [...lines.children].map((r) => ({ name: r.children[0].value.trim(), cents: toCents(r.children[1].value) }));
+
+    // Same rule as the server's checkReceipt, shown live so the organiser can fix AI misreads.
+    function check_() {
+      const list = items();
+      const sum = list.reduce((a, i) => a + (i.cents ?? 0), 0);
+      const sub = toCents(subtotal.value), tot = toCents(total.value);
+      let text = `Items add up to ${eur(sum)}.`, ok = true;
+      if (list.some((i) => !i.name || i.cents == null || i.cents < 0)) { text = "Every item needs a name and a price."; ok = false; }
+      else if (sub != null && sub !== sum) { text = `⚠️ Items add up to ${eur(sum)} but the receipt says ${eur(sub)}. Fix an item, or clear the subtotal if the AI misread it.`; ok = false; }
+      else if (tot == null || tot < sum) { text = `⚠️ The total must be at least the items (${eur(sum)}).`; ok = false; }
+      else if (tot > sum) text = `✅ Items ${eur(sum)} + tip/service ${eur(tot - sum)} = ${eur(tot)}. Tip is shared in proportion to what people had.`;
+      else text = `✅ Items add up to the total, ${eur(tot)}.`;
+      check.textContent = text;
+      check.className = ok ? "ok" : "warn";
+      create.disabled = !ok;
+      return ok;
+    }
+
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      if (!check_()) return;
+      const r = await fetch("/api/tabs", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: title.value.trim(), organiser: organiser.value.trim(), payeeEmail: payee.value.trim(), totalCents: toCents(total.value), subtotalCents: toCents(subtotal.value), items: items() }),
+      });
+      const d = await r.json();
+      if (!r.ok) { check.textContent = `❌ ${d.error}${d.issues ? ": " + d.issues.join("; ") : ""}`; check.className = "warn"; return; }
+      try { localStorage.setItem("payshare-name", organiser.value.trim()); } catch {}
+      location.href = `/tab.html?id=${d.id}`;
+    };
+  </script>
+</body>
+</html>

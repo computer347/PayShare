@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PayShare</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <h1>PayShare</h1>
+    <p class="sub">Any bill, any group, one tab. Everyone pays their part with PayPal, and you see who has <em>actually</em> paid.</p>
+    <div class="card">
+      <a class="big" href="/new.html" style="display:block;text-align:center;text-decoration:none">📷 Split a receipt</a>
+    </div>
+    <div class="card">
+      <p>Or try it with a sample dinner paid by Sami: open the tab, tap what you had, pay your part in the PayPal sandbox.</p>
+      <button class="big" id="demo">Open the demo dinner</button>
+      <p id="msg" role="status"></p>
+    </div>
+  </main>
+  <script type="module">
+    demo.onclick = async () => {
+      const r = await (await fetch("/api/demo", { method: "POST" })).json();
+      if (r.id) location.href = `/tab.html?id=${r.id}`;
+      else msg.textContent = `❌ ${r.error}`;
+    };
+  </script>
+</body>
+</html>

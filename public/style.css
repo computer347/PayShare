@@ -1,0 +1,27 @@
+:root{--bg:#f6f7f9;--card:#fff;--ink:#14171f;--muted:#5d6475;--line:#e3e6ec;--accent:#0b5fff;--accent-soft:#e7efff;--ok:#127a3e;--warn:#9a6200}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b22;--ink:#eef0f4;--muted:#9aa1b2;--line:#2a2f3a;--accent:#6f9bff;--accent-soft:#1d2a47;--ok:#4cc27e;--warn:#e0a640}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:480px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:1.5rem;margin:0 0 4px}
+h2{font-size:1rem;margin:0 0 10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.sub{color:var(--muted);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:16px}
+label{display:block;font-weight:600;margin-bottom:6px}
+input{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{font:inherit;font-size:.85rem;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:999px;padding:3px 10px}
+button.chip{cursor:pointer}
+.item{display:flex;width:100%;text-align:left;gap:12px;align-items:flex-start;font:inherit;color:inherit;background:none;border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:8px;cursor:pointer}
+.item[aria-pressed=true]{border-color:var(--accent);background:var(--accent-soft)}
+.item:disabled{cursor:default;opacity:.7}
+.item .name{flex:1}
+.item .who{display:block;font-size:.85rem;color:var(--muted)}
+.price{font-variant-numeric:tabular-nums;white-space:nowrap}
+.row{display:flex;justify-content:space-between;gap:12px;padding:4px 0}
+.row.total{border-top:1px solid var(--line);margin-top:6px;padding-top:10px;font-weight:700}
+.muted{color:var(--muted)}
+.ok{color:var(--ok)}.warn{color:var(--warn)}
+.big{font-size:1.05rem;padding:12px 18px;border-radius:999px;border:0;background:var(--accent);color:#fff;font-weight:600;cursor:pointer;width:100%}
+#msg{min-height:1.5em;margin:10px 0 0}
+paypal-button{display:block;margin-top:12px}

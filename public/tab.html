@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PayShare tab</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <h1 id="title">Loading…</h1>
+    <p class="sub" id="subtitle"></p>
+    <button class="chip" id="share" style="margin:-8px 0 16px">🔗 Share this tab</button>
+
+    <div class="card">
+      <label for="me">Your name</label>
+      <input id="me" autocomplete="given-name" placeholder="e.g. Anna">
+      <div class="chips" id="names"></div>
+    </div>
+
+    <div class="card">
+      <h2>Tap what you had</h2>
+      <div id="items"></div>
+    </div>
+
+    <div class="card" id="mine" hidden>
+      <h2>Your part</h2>
+      <div id="lines"></div>
+      <paypal-button type="pay" hidden></paypal-button>
+      <p id="msg" role="status"></p>
+    </div>
+
+    <div class="card">
+      <h2>Who has paid</h2>
+      <div id="feed"></div>
+    </div>
+  </main>
+
+  <script type="module">
+    const id = new URLSearchParams(location.search).get("id");
+    const eur = (c) => `${(c / 100).toFixed(2)} €`;
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+    const say = (t) => (msg.textContent = t);
+    let state;
+
+    try { me.value = localStorage.getItem("payshare-name") ?? ""; } catch {}
+    me.oninput = () => { try { localStorage.setItem("payshare-name", me.value.trim()); } catch {} render(); };
+    const who = () => me.value.trim();
+
+    async function load() {
+      const r = await fetch(`/api/tabs/${id}`);
+      if (!r.ok) { title.textContent = "Tab not found"; return; }
+      state = await r.json();
+      render();
+    }
+
+    function render() {
+      if (!state) return;
+      const { tab, items, people, unclaimed } = state;
+      document.title = `${tab.title} · PayShare`;
+      title.textContent = tab.title;
+      subtitle.textContent = `${tab.organiser} paid ${eur(tab.totalCents)}. Tap your items, then pay ${tab.organiser} back with PayPal.`;
+      const others = [...new Set([tab.organiser, ...people.map((p) => p.person)])].filter((n) => n !== who());
+      names.innerHTML = others.map((n) => `<button class="chip" data-name="${esc(n)}">I'm ${esc(n)}</button>`).join("");
+
+      const paid = new Set(people.filter((p) => !["open", "organiser"].includes(p.status)).map((p) => p.person));
+      document.getElementById("items").innerHTML = items_html(items, paid);
+
+      const mineP = people.find((p) => p.person === who());
+      mine.hidden = !mineP;
+      if (mineP) {
+        lines.innerHTML =
+          mineP.items.map((i) => `<div class="row"><span>${esc(i.name)}${i.sharedWith > 1 ? ` <span class="muted">(1/${i.sharedWith})</span>` : ""}</span><span class="price">${eur(i.cents)}</span></div>`).join("") +
+          (mineP.extras ? `<div class="row muted"><span>Tip &amp; service share</span><span class="price">${eur(mineP.extras)}</span></div>` : "") +
+          `<div class="row total"><span>Total</span><span class="price">${eur(mineP.cents)}</span></div>`;
+        const canPay = mineP.status === "open";
+        document.querySelector("paypal-button").hidden = !canPay || !paypalReady;
+        if (mineP.status === "organiser") say("You paid the bill, so this is just your part of it. Everyone else pays you back.");
+        else if (mineP.status === "confirming") say("✅ Paid. Waiting for PayPal to confirm…");
+        else if (mineP.status === "paid") say("✅ Paid and confirmed by PayPal.");
+      }
+
+      feed.innerHTML =
+        people.map((p) => {
+          const label = { organiser: "paid the bill", paid: "✅ paid, confirmed by PayPal", confirming: "✅ paid (confirming…)", open: "⏳ not paid yet" }[p.status];
+          const cls = { paid: "ok", confirming: "ok", open: "warn" }[p.status] ?? "muted";
+          return `<div class="row"><span>${esc(p.person)} <span class="${cls}">${label}</span></span><span class="price">${eur(p.cents)}</span></div>`;
+        }).join("") +
+        (unclaimed ? `<div class="row"><span class="warn">Unclaimed: ${unclaimed.items.map((i) => esc(i.name)).join(", ")}</span><span class="price">${eur(unclaimed.total)}</span></div>` : "");
+    }
+
+    function items_html(list, paid) {
+      return list.map((i) => {
+        const mineClaim = i.claimers.includes(who());
+        const locked = !who() || i.claimers.some((c) => paid.has(c)) || paid.has(who());
+        const whoTxt = i.claimers.length ? i.claimers.map(esc).join(", ") : "nobody yet";
+        return `<button class="item" data-item="${i.id}" aria-pressed="${mineClaim}" ${locked ? "disabled" : ""}>
+          <span class="name">${esc(i.name)}<span class="who">${whoTxt}</span></span>
+          <span class="price">${eur(i.cents)}</span></button>`;
+      }).join("");
+    }
+
+    document.addEventListener("click", async (e) => {
+      const chip = e.target.closest("[data-name]");
+      if (chip) { me.value = chip.dataset.name; me.oninput(); return; }
+      const btn = e.target.closest("[data-item]");
+      if (!btn || btn.disabled) return;
+      const r = await fetch(`/api/tabs/${id}/claims`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId: Number(btn.dataset.item), person: who(), claimed: btn.getAttribute("aria-pressed") !== "true" }),
+      });
+      const d = await r.json();
+      if (r.ok) { state = d; render(); } else alert(d.error);
+    });
+
+    // PayPal JS SDK v6 (sandbox): https://developer.paypal.com/sdk/js/set-up
+    let paypalReady = false;
+    async function setupPayPal() {
+      await new Promise((ok, fail) => document.head.append(Object.assign(document.createElement("script"), { src: "https://www.sandbox.paypal.com/web-sdk/v6/core", onload: ok, onerror: fail })));
+      const { clientId } = await (await fetch("/config")).json();
+      const sdk = await window.paypal.createInstance({ clientId, components: ["paypal-payments"], pageType: "checkout" });
+      if (!(await sdk.findEligibleMethods({ currencyCode: "EUR" })).isEligible("paypal")) throw new Error("PayPal isn't available for this payment");
+      const session = sdk.createPayPalOneTimePaymentSession({
+        async onApprove({ orderId }) {
+          say("Confirming payment…");
+          const r = await fetch(`/api/orders/${orderId}/capture`, { method: "POST" });
+          const d = await r.json();
+          if (!r.ok) say(`❌ ${d.error}`);
+          await load();
+        },
+        onCancel: () => say("Payment cancelled. Your part is still open."),
+        onError: (e) => say(`❌ ${e.message ?? e}`),
+      });
+      const btn = document.querySelector("paypal-button");
+      btn.addEventListener("click", () => {
+        say("");
+        // The server works out the amount from the claims; the browser only says who is paying.
+        const order = fetch(`/api/tabs/${id}/pay`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ person: who() }) })
+          .then((r) => r.json())
+          .then((d) => { if (!d.id) throw new Error(d.error); return { orderId: d.id }; });
+        session.start({ presentationMode: "auto" }, order).catch((e) => say(`❌ ${e.message}`));
+      });
+      paypalReady = true;
+      render();
+    }
+
+    share.onclick = async () => {
+      const url = location.href;
+      if (navigator.share) return navigator.share({ title: state?.tab.title, text: "Tap what you had and pay your part:", url }).catch(() => {});
+      await navigator.clipboard.writeText(url);
+      share.textContent = "✅ Link copied";
+    };
+
+    await load();
+    setupPayPal().catch((e) => say(`❌ ${e.message}`));
+    setInterval(load, 3000); // shortcut: polling; switch to Server-Sent Events with the webhook work
+  </script>
+</body>
+</html>
